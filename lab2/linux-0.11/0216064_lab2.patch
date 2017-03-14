@@ -1,0 +1,158 @@
+diff --git a/lab1/linux-0.11/Makefile b/lab1/linux-0.11/Makefile
+index 1629240..a82835d 100644
+--- a/lab1/linux-0.11/Makefile
++++ b/lab1/linux-0.11/Makefile
+@@ -42,11 +42,11 @@ LIBS	=lib/lib.a
+ 
+ all:	Image	
+ 
+-Image: boot/bootsect boot/setup tools/system
++Image: boot/bootsect boot/setup tools/system boot/hello
+ 	@cp -f tools/system system.tmp
+ 	@strip system.tmp
+ 	@objcopy -O binary -R .note -R .comment system.tmp tools/kernel
+-	@tools/build.sh boot/bootsect boot/setup tools/kernel Image $(ROOT_DEV)
++	@tools/build.sh boot/bootsect boot/setup tools/kernel Image boot/hello $(ROOT_DEV)
+ 	@rm system.tmp
+ 	@rm tools/kernel -f
+ 	@sync
+@@ -91,6 +91,9 @@ lib/lib.a:
+ boot/setup: boot/setup.s
+ 	@make setup -C boot
+ 
++boot/hello: boot/hello.s
++	@make hello -C boot
++
+ boot/bootsect: boot/bootsect.s
+ 	@make bootsect -C boot
+ 
+diff --git a/lab1/linux-0.11/boot/Makefile b/lab1/linux-0.11/boot/Makefile
+index c68e252..d21ead2 100644
+--- a/lab1/linux-0.11/boot/Makefile
++++ b/lab1/linux-0.11/boot/Makefile
+@@ -2,13 +2,17 @@ include ../Makefile.header
+ 
+ LDFLAGS	+= -Ttext 0
+ 
+-all: bootsect setup
++all: bootsect setup hello
+ 
+ bootsect: bootsect.s
+ 	@$(AS) -o bootsect.o bootsect.s
+ 	@$(LD) $(LDFLAGS) -o bootsect bootsect.o
+ 	@objcopy -R .pdr -R .comment -R.note -S -O binary bootsect
+ 
++hello: hello.s
++	@$(AS) -o hello.o hello.s
++	@$(LD) $(LDFLAGS) -o hello hello.o
++	@objcopy -R .pdr -R .comment -R.note -S -O binary hello
+ 
+ setup: setup.s
+ 	@$(AS) -o setup.o setup.s
+@@ -19,4 +23,4 @@ head.o: head.s
+ 	@$(AS) -o head.o head.s
+ 
+ clean:
+-	@rm -f bootsect bootsect.o setup setup.o head.o
++	@rm -f bootsect bootsect.o setup setup.o head.o hello hello.o
+diff --git a/lab1/linux-0.11/boot/bootsect.s b/lab1/linux-0.11/boot/bootsect.s
+index 94b1114..fd20903 100644
+--- a/lab1/linux-0.11/boot/bootsect.s
++++ b/lab1/linux-0.11/boot/bootsect.s
+@@ -34,9 +34,11 @@
+ 	.text
+ 
+ 	.equ SETUPLEN, 4		# nr of setup-sectors
++	.equ HELLOLEN, 1		# nr of hello-sectors
+ 	.equ BOOTSEG, 0x07c0		# original address of boot-sector
+ 	.equ INITSEG, 0x9000		# we move boot here - out of the way
+ 	.equ SETUPSEG, 0x9020		# setup starts here
++	.equ HELLOSEG, 0x9920		# setup starts here
+ 	.equ SYSSEG, 0x1000		# system loaded at 0x10000 (65536).
+ 	.equ ENDSEG, SYSSEG + SYSSIZE	# where to stop loading
+ 
+@@ -65,9 +67,38 @@ go:	mov	%cs, %ax
+ # load the setup-sectors directly after the bootblock.
+ # Note that 'es' is already set up.
+ 
+-load_setup:
++# press 1 or 2
++keyboard:
++	mov     $0x0000, %AH             # function number = 00h :
++	int     $0x16                   # call INT 16h, BIOS Keyboard services
++	cmp     $0x31, %AL
++	je      load_setup
++	cmp     $0x32, %AL
++	je      load_hello
++	jmp     keyboard
++
++
++load_hello:
++	mov	$HELLOSEG, %ax
++	mov	%ax, %es
+ 	mov	$0x0000, %dx		# drive 0, head 0
+ 	mov	$0x0002, %cx		# sector 2, track 0
++	mov	$0x0000, %bx		# address = 512, in INITSEG
++	.equ    AX, 0x0200+HELLOLEN
++	mov     $AX, %ax		# service 2, nr of sectors
++	int	$0x13			# read it
++	jnc	ok_load_hello		# ok - continue
++	mov	$0x0000, %dx
++	mov	$0x0000, %ax		# reset the diskette
++	int	$0x13
++	jmp	load_hello
++
++ok_load_hello:
++	ljmp	$HELLOSEG, $0
++
++load_setup:
++	mov	$0x0000, %dx		# drive 0, head 0
++	mov	$0x0003, %cx		# sector 2, track 0
+ 	mov	$0x0200, %bx		# address = 512, in INITSEG
+ 	.equ    AX, 0x0200+SETUPLEN
+ 	mov     $AX, %ax		# service 2, nr of sectors
+@@ -147,7 +178,7 @@ root_defined:
+ #
+ # in:	es - starting address segment (normally 0x1000)
+ #
+-sread:	.word 1+ SETUPLEN	# sectors read of current track
++sread:	.word 2+ SETUPLEN	# sectors read of current track
+ head:	.word 0			# current head
+ track:	.word 0			# current track
+ 
+diff --git a/lab1/linux-0.11/tools/build.sh b/lab1/linux-0.11/tools/build.sh
+index d542a8f..a75eba5 100755
+--- a/lab1/linux-0.11/tools/build.sh
++++ b/lab1/linux-0.11/tools/build.sh
+@@ -7,7 +7,8 @@ bootsect=$1
+ setup=$2
+ system=$3
+ IMAGE=$4
+-root_dev=$5
++hello_img=$5
++root_dev=$6
+ 
+ # Set the biggest sys_size
+ # Changes from 0x20000 to 0x30000 by tigercn to avoid oversized code.
+@@ -26,15 +27,19 @@ fi
+ [ ! -f "$bootsect" ] && echo "there is no bootsect binary file there" && exit -1
+ dd if=$bootsect bs=512 count=1 of=$IMAGE 2>&1 >/dev/null
+ 
++# Write hello(512bytes, four sectors) to stdout
++[ ! -f "$hello_img" ] && echo "there is no hello binary file there" && exit -1 
++dd if=$hello_img seek=1 bs=512 count=1 of=$IMAGE 2>&1 >/dev/null
++
+ # Write setup(4 * 512bytes, four sectors) to stdout
+ [ ! -f "$setup" ] && echo "there is no setup binary file there" && exit -1
+-dd if=$setup seek=1 bs=512 count=4 of=$IMAGE 2>&1 >/dev/null
++dd if=$setup seek=2 bs=512 count=4 of=$IMAGE 2>&1 >/dev/null
+ 
+ # Write system(< SYS_SIZE) to stdout
+ [ ! -f "$system" ] && echo "there is no system binary file there" && exit -1
+ system_size=`wc -c $system |cut -d" " -f1`
+ [ $system_size -gt $SYS_SIZE ] && echo "the system binary is too big" && exit -1
+-dd if=$system seek=5 bs=512 count=$((2888-1-4)) of=$IMAGE 2>&1 >/dev/null
++dd if=$system seek=6 bs=512 count=$((2888-1-4)) of=$IMAGE 2>&1 >/dev/null
+ 
+ # Set "device" for the root image file
+ echo -ne "\x$DEFAULT_MINOR_ROOT\x$DEFAULT_MAJOR_ROOT" | dd ibs=1 obs=1 count=2 seek=508 of=$IMAGE conv=notrunc  2>&1 >/dev/null

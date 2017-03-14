@@ -1,0 +1,2 @@
+#!/bin/sh
+qemu-system-i386 -boot a,menu=on,splash-time=2000,splash='/var/run/vmblock-fuse/blockdir/8a8385d0/bootsplash.jpg' -fda /home/osdi/osdi/osdi/lab1/linux-0.11/Image -hda /home/osdi/osdi/osdi.img
